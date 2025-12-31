@@ -1,0 +1,38 @@
+# URL 文件更新检查配置
+# 此配置文件定义了要监控的 URL 列表、Telegram 通知设置和检测条件
+
+# URL 列表 - 要监控的文件地址数组
+urls:
+  - "https://example.com/file1.pdf"
+  - "https://example.com/file2.jpg"
+  # 添加更多 URL...
+
+# Telegram 消息模板配置 - 所有 URL 共享
+# 注意：chatId 通过 GitHub Variable CHECK_URL_FILE_UPDATE (JSON 格式) 配置（必需）
+# Secrets 格式: {"telegram_bot_token": "xxx"}
+# Variables 格式: {"telegram_chat_id": "xxx"}
+telegram:
+  # 消息模板（支持 Markdown 格式）
+  # 支持的变量：
+  #   {{FILE_NAME}} - 文件名（从 URL 提取）
+  #   {{FILE_SIZE_MB}} - 文件大小（MB，保留 2 位小数）
+  #   {{FILE_SIZE_BYTES}} - 文件大小（字节）
+  #   {{FILE_URL}} - 文件下载地址
+  #   {{CHECK_TIME}} - 检查时间（UTC 时间，格式：YYYY-MM-DD HH:MM:SS）
+  message: |
+    📄 **文件更新通知**
+
+    **文件信息:**
+    - 文件名: `{{FILE_NAME}}`
+    - 大小: {{FILE_SIZE_MB}} MB ({{FILE_SIZE_BYTES}} bytes)
+    - 下载链接: {{FILE_URL}}
+
+    🕐 检查时间: {{CHECK_TIME}}
+
+# 检测条件 - 用于判断文件是否更新的 HTTP header 字段
+# 支持的字段（只能使用以下两个）：
+#   - last-modified: 文件最后修改时间
+#   - location: 重定向后的最终 URL（用于检测下载地址变化）
+conditions:
+  - "last-modified"
+  - "location"

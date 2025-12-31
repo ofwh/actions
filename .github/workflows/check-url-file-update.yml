@@ -1,0 +1,318 @@
+name: Check URL File Update
+
+# ============================================================
+# Workflow 说明
+# ============================================================
+# 功能: 批量监控远程 URL 文件更新，检测到更新时下载文件并发送 Telegram 通知
+#
+# 配置文件: configs/<config_file>.yaml
+#   默认: configs/check-url-file-update/config.yaml
+#   - urls: 要监控的 URL 列表
+#   - telegram: Telegram 通知配置（含消息模板）
+#   - conditions: HTTP header 检测条件
+#
+# 必需的 GitHub Secrets (JSON 格式) - 敏感信息:
+#   - CHECK_URL_FILE_UPDATE: JSON 对象，包含敏感配置
+#     {
+#       "telegram_bot_token": "your-bot-token"
+#     }
+#
+# 必需的 GitHub Variables (JSON 格式) - 非敏感配置:
+#   - CHECK_URL_FILE_UPDATE: JSON 对象，包含非敏感配置
+#     {
+#       "telegram_chat_id": "your-chat-id"
+#     }
+#
+# 工作流程:
+#   1. Prepare Job: 解析配置文件，生成 matrix
+#   2. Check Job: 对每个 URL 并行执行检查、下载、通知
+#
+# ============================================================
+
+# 触发方式
+on:
+  # 定时触发 - 每天 UTC 00:00 执行
+  schedule:
+    - cron: '0 0 * * *'
+
+  # 手动触发 - 支持传入配置文件名
+  workflow_dispatch:
+    inputs:
+      config_file:
+        description: '配置文件名（不含扩展名）'
+        required: false
+        default: 'check-url-file-update/config'
+        type: string
+
+# 权限配置
+permissions:
+  contents: read
+
+jobs:
+  # 准备作业：解析配置文件并生成 matrix
+  prepare:
+    name: Parse Config and Generate Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.generate-matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup yq
+        uses: mikefarah/yq@v4
+
+      - name: Generate matrix from config
+        id: generate-matrix
+        run: |
+          # 获取配置文件名
+          CONFIG_FILE="${{ inputs.config_file || 'check-url-file-update' }}"
+          CONFIG_PATH="configs/${CONFIG_FILE}.yaml"
+
+          echo "使用配置文件: $CONFIG_PATH"
+
+          # 检查配置文件是否存在
+          if [ ! -f "$CONFIG_PATH" ]; then
+            echo "错误: 配置文件不存在: $CONFIG_PATH"
+            exit 1
+          fi
+
+          # 读取配置
+          echo "正在解析配置文件..."
+          URLS=$(yq eval '.urls[]' "$CONFIG_PATH" | jq -R . | jq -s .)
+          TELEGRAM=$(yq eval '.telegram' "$CONFIG_PATH" -o=json)
+          CONDITIONS=$(yq eval '.conditions' "$CONFIG_PATH" -o=json)
+
+          # 验证配置
+          URL_COUNT=$(echo "$URLS" | jq 'length')
+          echo "配置文件包含 $URL_COUNT 个 URL"
+
+          if [ "$URL_COUNT" -eq 0 ]; then
+            echo "错误: urls 数组为空"
+            exit 1
+          fi
+
+          # 验证 conditions（只支持 last-modified 和 location）
+          INVALID_CONDITIONS=$(echo "$CONDITIONS" | jq -r '.[] | select(. != "last-modified" and . != "location")')
+          if [ -n "$INVALID_CONDITIONS" ]; then
+            echo "错误: conditions 只支持 'last-modified' 和 'location'"
+            echo "无效的条件: $INVALID_CONDITIONS"
+            exit 1
+          fi
+
+          # 生成 matrix
+          MATRIX=$(jq -n \
+            --argjson urls "$URLS" \
+            --argjson telegram "$TELEGRAM" \
+            --argjson conditions "$CONDITIONS" \
+            '{include: [$urls[] | {url: ., telegram: $telegram, conditions: $conditions}]}')
+
+          echo "已生成 Matrix，包含以下 URL:"
+          echo "$MATRIX" | jq -r '.include[].url'
+
+          # 输出 matrix（使用 multiline output）
+          {
+            echo "matrix<<EOF"
+            echo "$MATRIX"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+  # 检查作业：使用 matrix 策略处理每个 URL
+  check:
+    name: Check URL
+    needs: prepare
+    runs-on: ubuntu-latest
+
+    # 如果 prepare 失败则跳过
+    if: needs.prepare.result == 'success'
+
+    # 解析 JSON 格式的 secrets 和 vars
+    env:
+      SECRETS_JSON: ${{ secrets.CHECK_URL_FILE_UPDATE }}
+      VARS_JSON: ${{ vars.CHECK_URL_FILE_UPDATE }}
+
+    strategy:
+      # 即使某个 URL 失败也继续处理其他 URL
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Display job info
+        run: |
+          echo "当前检查 URL: ${{ matrix.url }}"
+          echo "检测条件: ${{ join(matrix.conditions, ', ') }}"
+
+      - name: Generate cache key
+        id: cache-key
+        run: |
+          # 使用 URL 的 SHA256 作为缓存 key
+          URL_HASH=$(echo -n "${{ matrix.url }}" | sha256sum | cut -d' ' -f1)
+          echo "hash=$URL_HASH" >> $GITHUB_OUTPUT
+          echo "缓存 Key: url-headers-$URL_HASH"
+
+      - name: Restore cache
+        id: restore-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/${{ steps.cache-key.outputs.hash }}.headers
+          key: url-headers-${{ steps.cache-key.outputs.hash }}
+
+      - name: Check for updates
+        id: check-update
+        run: |
+          URL="${{ matrix.url }}"
+          CACHE_FILE=".cache/${{ steps.cache-key.outputs.hash }}.headers"
+          CURRENT_HEADERS="current.headers"
+
+          echo "正在发送 HEAD 请求..."
+
+          # 创建缓存目录
+          mkdir -p .cache
+
+          # 获取当前 headers（根据 conditions 提取）
+          > "$CURRENT_HEADERS"
+          for condition in $(echo '${{ toJson(matrix.conditions) }}' | jq -r '.[]'); do
+            curl -I -L "$URL" 2>/dev/null | grep -i "^${condition}:" >> "$CURRENT_HEADERS" || true
+          done
+
+          echo "当前 Headers:"
+          cat "$CURRENT_HEADERS"
+
+          # 如果没有历史缓存，视为有更新
+          if [ ! -f "$CACHE_FILE" ]; then
+            echo "未找到历史缓存，视为首次检查"
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "历史 Headers:"
+            cat "$CACHE_FILE"
+
+            # 对比 headers
+            if diff "$CACHE_FILE" "$CURRENT_HEADERS" >/dev/null 2>&1; then
+              echo "Headers 未发生变化，无需更新"
+              echo "has_update=false" >> $GITHUB_OUTPUT
+            else
+              echo "检测到 Headers 变化，文件已更新"
+              echo "has_update=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+          # 保存当前 headers 到缓存文件（无论是否变化）
+          cp "$CURRENT_HEADERS" "$CACHE_FILE"
+
+      - name: Save cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .cache/${{ steps.cache-key.outputs.hash }}.headers
+          key: url-headers-${{ steps.cache-key.outputs.hash }}-${{ github.run_id }}
+
+      - name: Download file
+        id: download
+        if: steps.check-update.outputs.has_update == 'true'
+        run: |
+          URL="${{ matrix.url }}"
+
+          # 提取文件名（去除查询参数）
+          FILE_NAME=$(basename "$URL" | cut -d'?' -f1)
+
+          # 如果文件名为空，使用默认名称
+          if [ -z "$FILE_NAME" ]; then
+            FILE_NAME="downloaded_file_$(date +%s)"
+          fi
+
+          FILE_PATH="/tmp/${FILE_NAME}"
+
+          echo "正在下载文件: $FILE_NAME"
+
+          # 下载文件（失败重试一次）
+          if ! curl -L -o "$FILE_PATH" "$URL"; then
+            echo "首次下载失败，正在重试..."
+            if ! curl -L -o "$FILE_PATH" "$URL"; then
+              echo "下载失败"
+              exit 1
+            fi
+          fi
+
+          echo "文件下载成功"
+
+          # 获取文件大小（兼容 macOS 和 Linux）
+          FILE_SIZE_BYTES=$(stat -f%z "$FILE_PATH" 2>/dev/null || stat -c%s "$FILE_PATH")
+          FILE_SIZE_MB=$(echo "scale=2; $FILE_SIZE_BYTES / 1024 / 1024" | bc)
+
+          # 获取检查时间
+          CHECK_TIME=$(date -u "+%Y-%m-%d %H:%M:%S")
+
+          echo "文件信息:"
+          echo "  文件名: $FILE_NAME"
+          echo "  大小: $FILE_SIZE_MB MB ($FILE_SIZE_BYTES bytes)"
+          echo "  检查时间: $CHECK_TIME"
+
+          # 输出变量
+          {
+            echo "file_path=$FILE_PATH"
+            echo "file_name=$FILE_NAME"
+            echo "file_size_bytes=$FILE_SIZE_BYTES"
+            echo "file_size_mb=$FILE_SIZE_MB"
+            echo "check_time=$CHECK_TIME"
+          } >> $GITHUB_OUTPUT
+
+      - name: Prepare message
+        id: prepare-message
+        if: steps.download.outcome == 'success'
+        run: |
+          # 读取消息模板
+          MESSAGE_TEMPLATE='${{ matrix.telegram.message }}'
+
+          # 获取变量
+          FILE_NAME="${{ steps.download.outputs.file_name }}"
+          FILE_SIZE_MB="${{ steps.download.outputs.file_size_mb }}"
+          FILE_SIZE_BYTES="${{ steps.download.outputs.file_size_bytes }}"
+          FILE_URL="${{ matrix.url }}"
+          CHECK_TIME="${{ steps.download.outputs.check_time }}"
+
+          # 替换变量
+          MESSAGE="${MESSAGE_TEMPLATE//\{\{FILE_NAME\}\}/$FILE_NAME}"
+          MESSAGE="${MESSAGE//\{\{FILE_SIZE_MB\}\}/$FILE_SIZE_MB}"
+          MESSAGE="${MESSAGE//\{\{FILE_SIZE_BYTES\}\}/$FILE_SIZE_BYTES}"
+          MESSAGE="${MESSAGE//\{\{FILE_URL\}\}/$FILE_URL}"
+          MESSAGE="${MESSAGE//\{\{CHECK_TIME\}\}/$CHECK_TIME}"
+
+          echo "已准备 Telegram 消息内容"
+
+          # 输出消息（使用 multiline output）
+          {
+            echo "message<<EOF"
+            echo "$MESSAGE"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Send to Telegram
+        if: steps.download.outcome == 'success'
+        uses: appleboy/telegram-action@master
+        with:
+          token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
+          to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
+          document: ${{ steps.download.outputs.file_path }}
+          message: ${{ steps.prepare-message.outputs.message }}
+          format: markdown
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## 检查结果" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **URL**: ${{ matrix.url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **检测结果**: ${{ steps.check-update.outputs.has_update == 'true' && '有更新' || '无更新' }}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.check-update.outputs.has_update }}" == "true" ]; then
+            echo "- **文件名**: ${{ steps.download.outputs.file_name }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **文件大小**: ${{ steps.download.outputs.file_size_mb }} MB" >> $GITHUB_STEP_SUMMARY
+            echo "- **下载状态**: ${{ steps.download.outcome }}" >> $GITHUB_STEP_SUMMARY
+
+            if [ "${{ steps.download.outcome }}" == "success" ]; then
+              echo "- **通知状态**: 已发送至 Telegram" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "- **通知状态**: 下载失败，未发送通知" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
