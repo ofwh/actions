@@ -322,16 +322,23 @@ jobs:
           echo "文件大小: $FILE_SIZE bytes"
           echo "文件将通过 Telegram 发送"
 
-      - name: Send to Telegram
+      - name: Send message to Telegram
         if: steps.download.outcome == 'success'
         uses: appleboy/telegram-action@master
         with:
           to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
           token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
           message: ${{ steps.prepare-message.outputs.message }}
-          document: ${{ steps.download.outputs.file_path }}
           format: markdown
           disable_web_page_preview: true
+
+      - name: Send document to Telegram
+        if: steps.download.outcome == 'success'
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
+          token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
+          document: ${{ steps.download.outputs.file_path }}
 
       - name: Job summary
         if: always()
