@@ -307,15 +307,31 @@ jobs:
             echo "EOF"
           } >> $GITHUB_OUTPUT
 
+      - name: Verify file before sending
+        if: steps.download.outcome == 'success'
+        run: |
+          FILE_PATH="${{ steps.download.outputs.file_path }}"
+          echo "验证文件路径: $FILE_PATH"
+
+          if [ ! -f "$FILE_PATH" ]; then
+            echo "错误: 文件不存在: $FILE_PATH"
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat -f%z "$FILE_PATH" 2>/dev/null || stat -c%s "$FILE_PATH")
+          echo "文件大小: $FILE_SIZE bytes"
+          echo "文件将通过 Telegram 发送"
+
       - name: Send to Telegram
         if: steps.download.outcome == 'success'
         uses: appleboy/telegram-action@master
         with:
-          token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
           to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
-          document: ${{ steps.download.outputs.file_path }}
+          token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
           message: ${{ steps.prepare-message.outputs.message }}
+          document: ${{ steps.download.outputs.file_path }}
           format: markdown
+          disable_web_page_preview: true
 
       - name: Job summary
         if: always()

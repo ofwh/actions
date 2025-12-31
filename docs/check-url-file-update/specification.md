@@ -283,14 +283,18 @@ to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
        - 读取 `matrix.telegram.message` 模板
        - 替换变量占位符（FILE_NAME、FILE_SIZE_MB、FILE_URL、CHECK_TIME 等）
        - 输出: 处理后的消息内容
+     - **验证文件**:
+       - 检查文件是否存在
+       - 输出文件大小信息
      - **发送 Telegram** (如果下载成功):
        - 使用 `appleboy/telegram-action@master`
        - 传入参数：
-         - `token`: `${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}`
          - `to`: `${{ fromJson(env.VARS_JSON).telegram_chat_id }}`
-         - `document`: 下载的文件路径
-         - `message`: 处理后的消息内容
-         - `format`: `markdown`
+         - `token`: `${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}`
+         - `message`: 处理后的消息内容（作为文件的 caption）
+         - `document`: 下载的文件路径（文件本体）
+         - `format`: `markdown`（消息支持 Markdown 格式）
+         - `disable_web_page_preview`: `true`
 
 ---
 
@@ -426,12 +430,18 @@ echo "EOF" >> $GITHUB_OUTPUT
   if: steps.download.outcome == 'success'
   uses: appleboy/telegram-action@master
   with:
-    token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
     to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
-    document: ${{ steps.download.outputs.file_path }}
-    message: ${{ steps.prepare-message.outputs.message }}
-    format: markdown
+    token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
+    message: ${{ steps.prepare-message.outputs.message }}  # Caption（文件说明）
+    document: ${{ steps.download.outputs.file_path }}      # 文件本体
+    format: markdown                                       # 支持 Markdown 格式
+    disable_web_page_preview: true
 ```
+
+**说明**：
+- `document`: 发送的文件路径（文件本体）
+- `message`: 文件的 caption（说明文字），支持 Markdown 格式
+- `format: markdown`: 使 caption 支持 Markdown 富文本格式（**粗体**、`代码`、链接等）
 
 ---
 
