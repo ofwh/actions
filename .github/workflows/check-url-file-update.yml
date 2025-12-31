@@ -161,13 +161,14 @@ jobs:
         continue-on-error: true
         run: |
           echo "清理缓存模式已启用，将删除历史缓存数据"
-          CACHE_FILE=".cache/${{ steps.cache-key.outputs.hash }}.headers"
-          mkdir -p .cache
-          if [ -f "$CACHE_FILE" ]; then
-            rm -f "$CACHE_FILE"
-            echo "已删除缓存文件: $CACHE_FILE"
+          URL_HASH="${{ steps.cache-key.outputs.hash }}"
+          CACHE_DIR=".cache/${URL_HASH}"
+
+          if [ -d "$CACHE_DIR" ]; then
+            rm -rf "$CACHE_DIR"
+            echo "已删除缓存目录: $CACHE_DIR"
           else
-            echo "缓存文件不存在，跳过删除"
+            echo "缓存目录不存在，跳过删除"
           fi
 
       - name: Restore cache
@@ -175,20 +176,22 @@ jobs:
         if: inputs.clear_cache != true
         uses: actions/cache/restore@v4
         with:
-          path: .cache/${{ steps.cache-key.outputs.hash }}.headers
-          key: url-headers-${{ steps.cache-key.outputs.hash }}
+          path: .cache/${{ steps.cache-key.outputs.hash }}
+          key: url-cache-${{ steps.cache-key.outputs.hash }}
 
       - name: Check for updates
         id: check-update
         run: |
           URL="${{ matrix.url }}"
-          CACHE_FILE=".cache/${{ steps.cache-key.outputs.hash }}.headers"
+          URL_HASH="${{ steps.cache-key.outputs.hash }}"
+          CACHE_DIR=".cache/${URL_HASH}"
+          CACHE_FILE="${CACHE_DIR}/headers"
           CURRENT_HEADERS="current.headers"
 
           echo "正在发送 HEAD 请求..."
 
           # 创建缓存目录
-          mkdir -p .cache
+          mkdir -p "$CACHE_DIR"
 
           # 获取当前 headers（根据 conditions 提取）
           > "$CURRENT_HEADERS"
@@ -224,14 +227,15 @@ jobs:
         uses: actions/cache/save@v4
         if: always()
         with:
-          path: .cache/${{ steps.cache-key.outputs.hash }}.headers
-          key: url-headers-${{ steps.cache-key.outputs.hash }}-${{ github.run_id }}
+          path: .cache/${{ steps.cache-key.outputs.hash }}
+          key: url-cache-${{ steps.cache-key.outputs.hash }}-${{ github.run_id }}
 
       - name: Download file
         id: download
         if: steps.check-update.outputs.has_update == 'true'
         run: |
           URL="${{ matrix.url }}"
+          URL_HASH="${{ steps.cache-key.outputs.hash }}"
 
           # 提取文件名（去除查询参数）
           FILE_NAME=$(basename "$URL" | cut -d'?' -f1)
@@ -241,9 +245,14 @@ jobs:
             FILE_NAME="downloaded_file_$(date +%s)"
           fi
 
-          FILE_PATH="/tmp/${FILE_NAME}"
+          # 创建下载目录
+          DOWNLOAD_DIR=".cache/${URL_HASH}"
+          mkdir -p "$DOWNLOAD_DIR"
+
+          FILE_PATH="${DOWNLOAD_DIR}/${FILE_NAME}"
 
           echo "正在下载文件: $FILE_NAME"
+          echo "保存路径: $FILE_PATH"
 
           # 下载文件（失败重试一次）
           if ! curl -L -o "$FILE_PATH" "$URL"; then
@@ -322,23 +331,16 @@ jobs:
           echo "文件大小: $FILE_SIZE bytes"
           echo "文件将通过 Telegram 发送"
 
-      - name: Send message to Telegram
+      - name: Send to Telegram
         if: steps.download.outcome == 'success'
         uses: appleboy/telegram-action@master
         with:
           to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
           token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
           message: ${{ steps.prepare-message.outputs.message }}
+          document: ${{ steps.download.outputs.file_path }}
           format: markdown
           disable_web_page_preview: true
-
-      - name: Send document to Telegram
-        if: steps.download.outcome == 'success'
-        uses: appleboy/telegram-action@master
-        with:
-          to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
-          token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
-          document: ${{ steps.download.outputs.file_path }}
 
       - name: Job summary
         if: always()
