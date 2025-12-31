@@ -88,6 +88,11 @@ conditions:
 
 - **定时触发**: 每天 UTC 00:00 自动执行
 - **手动触发**: Actions → Check URL File Update → Run workflow
+  - 可选参数：
+    - **config_file**: 配置文件名（默认：`check-url-file-update/config`）
+    - **clear_cache**: 是否清理缓存（默认：`false`）
+      - ✅ 勾选：清理所有历史缓存，重新检测所有 URL（即使文件未变化也会下载并发送）
+      - ⬜ 不勾选：使用历史缓存，只检测有变化的 URL
 
 ### 4. 使用自定义配置文件
 

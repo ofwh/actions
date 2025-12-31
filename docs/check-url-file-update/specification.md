@@ -7,7 +7,11 @@
 
 ### 触发方式
 - **定时触发**: 可配置的 cron 表达式（例如：每小时或每天检查）
-- **手动触发**: `workflow_dispatch` 支持手动执行，可传入配置文件名参数
+- **手动触发**: `workflow_dispatch` 支持手动执行，可传入以下参数：
+  - `config_file`: 配置文件名（不含扩展名），默认 `check-url-file-update/config`
+  - `clear_cache`: 是否清理缓存（布尔值），默认 `false`
+    - `true`: 清理所有历史缓存，重新检测所有 URL
+    - `false`: 使用历史缓存，只检测有变化的 URL
 
 ### 输入参数（非敏感）
 - **工作流输入**:
@@ -96,7 +100,12 @@
    }
    ```
 4. **矩阵并行执行**: 使用 GitHub Actions `matrix` 策略，对每个 URL 执行：
-   - 从 `actions/cache` 恢复上次的状态（key: URL 哈希值，value: 上次的 HTTP headers）
+   - 生成缓存 key（基于 URL 的 SHA256 哈希）
+   - **如果启用清理缓存** (`clear_cache=true`):
+     - 删除历史缓存文件
+     - 跳过恢复缓存步骤
+   - **如果不清理缓存** (`clear_cache=false`，默认):
+     - 从 `actions/cache` 恢复上次的状态（key: URL 哈希值，value: 上次的 HTTP headers）
    - 发送 HEAD 请求到 URL（使用 `curl -I -L` 跟随重定向）获取当前 headers
    - 将 `conditions` 中指定的 header 字段与缓存值对比
    - 更新缓存为当前 headers（无论是否变化）
@@ -250,7 +259,12 @@ to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
 
 2. **检查作业 (Check Job)** - 使用 matrix 策略，依赖 Prepare Job:
    - 对 matrix 中的每个 URL：
-     - **恢复缓存**:
+     - **生成缓存 Key**:
+       - 使用 URL 的 SHA256 哈希生成唯一 key
+     - **清理缓存** (如果 `clear_cache=true`):
+       - 删除历史缓存文件
+       - 后续将视为首次检查
+     - **恢复缓存** (如果 `clear_cache=false`):
        - Key: `url-headers-<sha256(url)>`
        - Path: `.cache/<sha256(url)>.headers`
      - **检查更新**:

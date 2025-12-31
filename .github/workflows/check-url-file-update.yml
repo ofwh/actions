@@ -43,6 +43,11 @@ on:
         required: false
         default: 'check-url-file-update/config'
         type: string
+      clear_cache:
+        description: '是否清理缓存（清理后将重新检测所有 URL）'
+        required: false
+        default: false
+        type: boolean
 
 # 权限配置
 permissions:
@@ -151,8 +156,23 @@ jobs:
           echo "hash=$URL_HASH" >> $GITHUB_OUTPUT
           echo "缓存 Key: url-headers-$URL_HASH"
 
+      - name: Clear cache
+        if: inputs.clear_cache == true
+        continue-on-error: true
+        run: |
+          echo "清理缓存模式已启用，将删除历史缓存数据"
+          CACHE_FILE=".cache/${{ steps.cache-key.outputs.hash }}.headers"
+          mkdir -p .cache
+          if [ -f "$CACHE_FILE" ]; then
+            rm -f "$CACHE_FILE"
+            echo "已删除缓存文件: $CACHE_FILE"
+          else
+            echo "缓存文件不存在，跳过删除"
+          fi
+
       - name: Restore cache
         id: restore-cache
+        if: inputs.clear_cache != true
         uses: actions/cache/restore@v4
         with:
           path: .cache/${{ steps.cache-key.outputs.hash }}.headers
