@@ -333,14 +333,13 @@ jobs:
 
       - name: Send to Telegram
         if: steps.download.outcome == 'success'
-        uses: appleboy/telegram-action@master
+        uses: DiyRex/tgsend@v1.2
         with:
-          to: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
-          token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
+          bot_token: ${{ fromJson(env.SECRETS_JSON).telegram_bot_token }}
+          chat_id: ${{ fromJson(env.VARS_JSON).telegram_chat_id }}
           message: ${{ steps.prepare-message.outputs.message }}
-          document: ${{ steps.download.outputs.file_path }}
-          format: markdown
-          disable_web_page_preview: true
+          markdown: 'true'
+          files: ${{ steps.download.outputs.file_path }}
 
       - name: Job summary
         if: always()
